@@ -1,3 +1,4 @@
+mod automation;
 mod bytecode;
 mod core;
 
@@ -6,5 +7,5 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use super::RoprobeMcp;
 
 pub fn router() -> ToolRouter<RoprobeMcp> {
-    RoprobeMcp::core_router() + RoprobeMcp::bytecode_router()
+    RoprobeMcp::core_router() + RoprobeMcp::bytecode_router() + RoprobeMcp::automation_router()
 }

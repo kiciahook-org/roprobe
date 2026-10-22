@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::{sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
-    protocol::{HookEvent, TraceCall},
+    protocol::{HookEvent, LogEntry, RemoteCall, RemoteDirection, TraceCall},
     server::{SessionId, manager::Sessions},
 };
 
@@ -23,6 +23,8 @@ pub struct Streams {
     watched: Arc<Mutex<HashSet<SessionId>>>,
     hooks: Mutex<Option<JoinHandle<()>>>,
     traces: Mutex<Option<JoinHandle<()>>>,
+    logs: Mutex<Option<JoinHandle<()>>>,
+    remotes: Mutex<Option<JoinHandle<()>>>,
 }
 
 fn alive(slot: &Mutex<Option<JoinHandle<()>>>) -> bool {
@@ -85,11 +87,91 @@ impl Streams {
         });
         *self.traces.lock().unwrap() = Some(task);
     }
+
+    /// Console lines to the client; resubscribing replaces the old feed.
+    pub fn watch_logs(&self, peer: Peer<RoleServer>, sessions: &Sessions, only: Option<SessionId>, level: Option<String>) {
+        let mut rx = sessions.subscribe_log();
+        let task = tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok((sid, entries)) => {
+                        if only.is_some_and(|o| o != sid) {
+                            continue;
+                        }
+                        for e in entries.iter().filter(|e| level_ok(e, level.as_deref())) {
+                            if !emit(&peer, "roprobe.log", log_json(sid, e)).await {
+                                return;
+                            }
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        swap_task(&self.logs, task);
+    }
+
+    /// Remote calls to the client; resubscribing replaces the old feed.
+    pub fn watch_remotes(&self, peer: Peer<RoleServer>, sessions: &Sessions, only: Option<SessionId>, path: Option<String>) {
+        let mut rx = sessions.subscribe_remotes();
+        let task = tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok((sid, calls)) => {
+                        if only.is_some_and(|o| o != sid) {
+                            continue;
+                        }
+                        for c in calls.iter().filter(|c| path.as_deref().is_none_or(|p| c.remote.path.contains(p))) {
+                            if !emit(&peer, "roprobe.remote", remote_json(sid, c)).await {
+                                return;
+                            }
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+        swap_task(&self.remotes, task);
+    }
+}
+
+fn swap_task(slot: &Mutex<Option<JoinHandle<()>>>, task: JoinHandle<()>) {
+    if let Some(old) = slot.lock().unwrap().replace(task) {
+        old.abort(); // one feed per channel
+    }
+}
+
+fn level_ok(e: &LogEntry, want: Option<&str>) -> bool {
+    want.is_none_or(|w| format!("{:?}", e.level).eq_ignore_ascii_case(w))
+}
+
+fn log_json(sid: SessionId, e: &LogEntry) -> Value {
+    json!({
+        "session": sid.0,
+        "level": format!("{:?}", e.level).to_ascii_lowercase(),
+        "content": e.content,
+    })
+}
+
+fn remote_json(sid: SessionId, c: &RemoteCall) -> Value {
+    json!({
+        "session": sid.0,
+        "id": c.id,
+        "dir": if c.direction == RemoteDirection::Outgoing { "out" } else { "in" },
+        "remote": c.remote.path,
+        "method": c.method,
+        "args": c.arguments.len(),
+        "script": c.source.script,
+        "line": c.source.line,
+        "t": c.timestamp,
+    })
 }
 
 impl Drop for Streams {
     fn drop(&mut self) {
-        for slot in [&self.hooks, &self.traces] {
+        for slot in [&self.hooks, &self.traces, &self.logs, &self.remotes] {
             if let Some(h) = slot.lock().unwrap().take() {
                 h.abort();
             }
