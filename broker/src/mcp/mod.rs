@@ -11,7 +11,6 @@ use crate::Context;
 
 #[derive(Clone)]
 pub struct RoprobeMcp {
-    #[allow(dead_code)]
     pub ctx: Context,
     tool_router: ToolRouter<Self>,
 }
