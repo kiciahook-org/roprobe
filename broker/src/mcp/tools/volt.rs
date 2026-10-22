@@ -97,9 +97,10 @@ mod db {
     }
 }
 
+/// Launch via Volt's CDP (Tauri IPC). Goes through Volt's full pipeline.
 #[cfg(target_os = "windows")]
-async fn volt_launch_account(
-    cred_target: String,
+async fn volt_cdp_launch(
+    account_ids: &[String],
     place_id: u64,
 ) -> Result<serde_json::Value, String> {
     let script = include_str!("../../scripts/volt_launch.ps1");
@@ -107,11 +108,13 @@ async fn volt_launch_account(
         &base64::engine::general_purpose::STANDARD,
         script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>(),
     );
+    let ids_csv = account_ids.join(",");
+    let place = place_id.to_string();
     let out = tokio::task::spawn_blocking(move || {
         std::process::Command::new("powershell")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
-            .env("VOLT_CRED_TARGET", &cred_target)
-            .env("VOLT_PLACE_ID", place_id.to_string())
+            .env("VOLT_ACCOUNT_IDS", &ids_csv)
+            .env("VOLT_PLACE_ID", &place)
             .output()
     })
     .await
@@ -119,11 +122,16 @@ async fn volt_launch_account(
     .map_err(|e| format!("powershell: {e}"))?;
 
     let text = String::from_utf8_lossy(&out.stdout);
-    serde_json::from_str(text.trim()).map_err(|e| format!("parse launch result: {e}\nraw: {text}"))
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !stderr.is_empty() {
+        tracing::warn!("volt_launch stderr: {stderr}");
+    }
+    serde_json::from_str(text.trim())
+        .map_err(|e| format!("parse: {e}\nstdout: {text}\nstderr: {stderr}"))
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn volt_launch_account(_: String, _: u64) -> Result<serde_json::Value, String> {
+async fn volt_cdp_launch(_: &[String], _: u64) -> Result<serde_json::Value, String> {
     Err("volt-launch is windows only".into())
 }
 
@@ -191,10 +199,7 @@ impl RoprobeMcp {
             ));
         }
 
-        let target =
-            db::cred_target(&acct.encrypted_cookie).ok_or("bad encryptedCookie format")?;
-
-        let result = volt_launch_account(target, a.place_id).await?;
+        let result = volt_cdp_launch(&[acct.id.clone()], a.place_id).await?;
         if let Some(err) = result.get("error") {
             return Err(err.as_str().unwrap_or("unknown").to_string());
         }
@@ -256,40 +261,16 @@ impl RoprobeMcp {
             return Err("no alive accounts in Volt".into());
         }
 
-        let delay = Duration::from_secs(a.delay.unwrap_or(5).into());
-        let mut launched = vec![];
-        let mut failed = vec![];
+        // launch all at once via CDP — Volt handles delay internally
+        let ids: Vec<String> = alive.iter().map(|a| a.id.clone()).collect();
+        let usernames: Vec<&str> = alive.iter().map(|a| a.username.as_str()).collect();
 
-        for acct in &alive {
-            let target = match db::cred_target(&acct.encrypted_cookie) {
-                Some(t) => t,
-                None => {
-                    failed.push(json!({"username": acct.username, "error": "bad cookie ref"}));
-                    continue;
-                }
-            };
+        let result = volt_cdp_launch(&ids, a.place_id).await;
+        let launched: Vec<serde_json::Value> = usernames.iter().map(|u| json!({"username": u})).collect();
+        let failed: Vec<serde_json::Value> = vec![];
 
-            match volt_launch_account(target, a.place_id).await {
-                Ok(r) if r.get("ok").and_then(|v| v.as_bool()) == Some(true) => {
-                    launched.push(json!({
-                        "username": acct.username,
-                        "pid": r.get("pid"),
-                    }));
-                }
-                Ok(r) => {
-                    failed.push(json!({
-                        "username": acct.username,
-                        "error": r.get("error").unwrap_or(&json!("unknown")),
-                    }));
-                }
-                Err(e) => {
-                    failed.push(json!({"username": acct.username, "error": e}));
-                }
-            }
-
-            if acct.username != alive.last().unwrap().username {
-                tokio::time::sleep(delay).await;
-            }
+        if let Err(e) = &result {
+            return Err(format!("launch failed: {e}"));
         }
 
         Ok(json!({
