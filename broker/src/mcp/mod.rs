@@ -1,4 +1,7 @@
+pub mod isolation;
 pub mod tools;
+
+use std::sync::Arc;
 
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -12,12 +15,19 @@ use crate::Context;
 #[derive(Clone)]
 pub struct RoprobeMcp {
     pub ctx: Context,
+    pub agent_id: String,
+    pub locks: Arc<isolation::LockTable>,
     tool_router: ToolRouter<Self>,
 }
 
 impl RoprobeMcp {
     pub fn new(ctx: Context) -> Self {
-        Self { ctx, tool_router: tools::router() }
+        Self {
+            ctx,
+            agent_id: format!("{:016x}", rand::random::<u64>()),
+            locks: Arc::default(),
+            tool_router: tools::router(),
+        }
     }
 }
 
@@ -29,8 +39,12 @@ impl ServerHandler for RoprobeMcp {
 }
 
 pub async fn start(ctx: Context) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let svc = RoprobeMcp::new(ctx).serve(rmcp::transport::stdio()).await?;
-    tracing::info!("mcp up on stdio");
-    svc.waiting().await?;
+    let mcp = RoprobeMcp::new(ctx);
+    let (locks, me) = (mcp.locks.clone(), mcp.agent_id.clone());
+    let svc = mcp.serve(rmcp::transport::stdio()).await?;
+    tracing::info!("mcp up on stdio as {me}");
+    let res = svc.waiting().await;
+    locks.clear_agent(&me).await;
+    res?;
     Ok(())
 }

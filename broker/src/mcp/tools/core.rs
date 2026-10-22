@@ -83,6 +83,12 @@ pub struct TreeArgs {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct LockArgs {
+    /// Session id from list-sessions.
+    id: u32,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct InfoArgs {
     /// Target session id; defaults to the active one.
     session: Option<u32>,
@@ -131,7 +137,7 @@ fn tree_node(d: &SessionDom, r: Ref, depth: usize) -> Value {
 }
 
 impl RoprobeMcp {
-    async fn pick(&self, session: Option<u32>) -> Result<SessionId, String> {
+    async fn resolve(&self, session: Option<u32>) -> Result<SessionId, String> {
         match session {
             Some(id) => Ok(SessionId(id)),
             None => {
@@ -139,6 +145,15 @@ impl RoprobeMcp {
                 holder.current().map(|s| s.id).ok_or_else(|| "no active session".to_string())
             }
         }
+    }
+
+    async fn pick(&self, session: Option<u32>) -> Result<SessionId, String> {
+        let id = self.resolve(session).await?;
+        if self.ctx.sessions.holder.read().await.find(id).is_none() {
+            self.locks.clear_session(id).await; // ghost locks begone
+        }
+        self.locks.check(id, &self.agent_id).await?;
+        Ok(id)
     }
 
     async fn wait(rx: oneshot::Receiver<OpResult>, secs: u64) -> Result<String, String> {
@@ -153,12 +168,9 @@ impl RoprobeMcp {
     }
 
     async fn sink(&self, session: Option<u32>) -> Result<tokio::sync::mpsc::Sender<OpRequest>, String> {
+        let id = self.pick(session).await?;
         let holder = self.ctx.sessions.holder.read().await;
-        let s = match session {
-            Some(id) => holder.find(SessionId(id)),
-            None => holder.current(),
-        };
-        let s = s.ok_or("no such session (or none active)")?;
+        let s = holder.find(id).ok_or("no such session (or none active)")?;
         s.mirror.op_sink().ok_or_else(|| "session has no live op sink".to_string())
     }
 
@@ -176,7 +188,14 @@ impl RoprobeMcp {
     #[tool(name = "list-sessions", description = "List connected Roblox sessions and which is active.")]
     async fn list_sessions(&self) -> Result<String, String> {
         let list = self.ctx.sessions.holder.read().await.list();
-        serde_json::to_string(&list).map_err(|e| e.to_string())
+        let mut out = serde_json::to_value(&list).map_err(|e| e.to_string())?;
+        for s in out.as_array_mut().into_iter().flatten() {
+            let Some(id) = s["id"].as_u64().and_then(|n| u32::try_from(n).ok()) else { continue };
+            if let Some(owner) = self.locks.get_owner(SessionId(id)).await {
+                s["lockedBy"] = json!({"agent": owner, "you": owner == self.agent_id});
+            }
+        }
+        Ok(out.to_string())
     }
 
     #[tool(name = "set-active", description = "Make a session the active one.")]
@@ -313,5 +332,19 @@ impl RoprobeMcp {
 return game:GetService("HttpService"):JSONEncode({placeId=game.PlaceId,gameId=game.GameId,jobId=game.JobId,placeVersion=game.PlaceVersion,name=ok and p.Name or nil,creator=ok and p.Creator and p.Creator.Name or nil})"#;
         let rx = self.run(src.into(), a.session).await?;
         Self::wait(rx, 15).await
+    }
+
+    #[tool(name = "lock-session", description = "Claim a session; other agents get errors targeting it until unlocked.")]
+    async fn lock_session(&self, Parameters(a): Parameters<LockArgs>) -> Result<String, String> {
+        let id = SessionId(a.id);
+        self.ctx.sessions.holder.read().await.find(id).ok_or("no such session")?;
+        self.locks.lock(id, &self.agent_id).await?;
+        Ok(format!("locked {}", a.id))
+    }
+
+    #[tool(name = "unlock-session", description = "Release a session you locked.")]
+    async fn unlock_session(&self, Parameters(a): Parameters<LockArgs>) -> Result<String, String> {
+        self.locks.unlock(SessionId(a.id), &self.agent_id).await?;
+        Ok(format!("unlocked {}", a.id))
     }
 }
