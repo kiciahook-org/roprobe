@@ -56,6 +56,14 @@ pub enum Operation {
     RunCode {
         source: String,
     },
+    /// Relayed as a `ServerMessage::GetBytecode`; the client answers with `BytecodeData`.
+    GetBytecode {
+        script_path: String,
+    },
+    /// Relayed as a `ServerMessage::InspectClosure`; the client answers with `ClosureInfo`.
+    InspectClosure {
+        path: String,
+    },
 }
 
 impl Operation {
@@ -74,6 +82,8 @@ impl Operation {
             Operation::RenameAttribute { .. } => "rename-attribute",
             Operation::GetProperties { .. } => "get-properties",
             Operation::RunCode { .. } => "run-code",
+            Operation::GetBytecode { .. } => "get-bytecode",
+            Operation::InspectClosure { .. } => "inspect-closure",
         }
     }
 }

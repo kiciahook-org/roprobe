@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::{
     Context, Result,
     protocol::{
-        ClientMessage, DomId, HookEvent, OpResult, ServerMessage, TraceCall, text_encode,
+        ClientMessage, DomId, HookEvent, OpResult, Operation, ServerMessage, TraceCall, text_encode,
     },
     server::{DomRequest, Mirror, OpRequest, WsWrite},
 };
@@ -91,11 +91,16 @@ impl Session {
             "relaying operation to the client",
         );
         self.pending.insert(id, request.reply);
-        self.send(ServerMessage::Operation {
-            id,
-            op: request.operation,
-        })
-        .await
+        // own frames, request = op id
+        let message = match request.operation {
+            Operation::GetBytecode { script_path } => ServerMessage::GetBytecode {
+                request: id,
+                script_path,
+            },
+            Operation::InspectClosure { path } => ServerMessage::InspectClosure { request: id, path },
+            op => ServerMessage::Operation { id, op },
+        };
+        self.send(message).await
     }
 
     /// Send a message.

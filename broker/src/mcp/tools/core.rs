@@ -156,7 +156,7 @@ impl RoprobeMcp {
         Ok(id)
     }
 
-    async fn wait(rx: oneshot::Receiver<OpResult>, secs: u64) -> Result<String, String> {
+    pub(super) async fn wait(rx: oneshot::Receiver<OpResult>, secs: u64) -> Result<String, String> {
         match tokio::time::timeout(Duration::from_secs(secs), rx).await {
             Err(_) => Err("timed out".into()),
             Ok(Err(_)) => Err("session disconnected before answering".into()),
@@ -167,7 +167,7 @@ impl RoprobeMcp {
         }
     }
 
-    async fn sink(&self, session: Option<u32>) -> Result<tokio::sync::mpsc::Sender<OpRequest>, String> {
+    pub(super) async fn sink(&self, session: Option<u32>) -> Result<tokio::sync::mpsc::Sender<OpRequest>, String> {
         let id = self.pick(session).await?;
         let holder = self.ctx.sessions.holder.read().await;
         let s = holder.find(id).ok_or("no such session (or none active)")?;

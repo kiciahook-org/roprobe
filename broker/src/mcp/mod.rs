@@ -1,3 +1,4 @@
+pub mod bytecode_parser;
 pub mod isolation;
 pub mod tools;
 
