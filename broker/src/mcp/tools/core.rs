@@ -113,7 +113,7 @@ fn level_name(l: LogLevel) -> &'static str {
     }
 }
 
-fn luau_str(s: &str) -> String {
+pub(super) fn luau_str(s: &str) -> String {
     let body = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
     format!("\"{body}\"")
 }
@@ -147,7 +147,7 @@ impl RoprobeMcp {
         }
     }
 
-    async fn pick(&self, session: Option<u32>) -> Result<SessionId, String> {
+    pub(super) async fn pick(&self, session: Option<u32>) -> Result<SessionId, String> {
         let id = self.resolve(session).await?;
         if self.ctx.sessions.holder.read().await.find(id).is_none() {
             self.locks.clear_session(id).await; // ghost locks begone

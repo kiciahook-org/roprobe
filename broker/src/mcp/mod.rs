@@ -1,5 +1,6 @@
 pub mod bytecode_parser;
 pub mod isolation;
+pub mod streaming;
 pub mod tools;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ pub struct RoprobeMcp {
     pub ctx: Context,
     pub agent_id: String,
     pub locks: Arc<isolation::LockTable>,
+    pub streams: Arc<streaming::Streams>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -27,6 +29,7 @@ impl RoprobeMcp {
             ctx,
             agent_id: format!("{:016x}", rand::random::<u64>()),
             locks: Arc::default(),
+            streams: Arc::default(),
             tool_router: tools::router(),
         }
     }
@@ -34,8 +37,9 @@ impl RoprobeMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for RoprobeMcp {
+    #[allow(deprecated)] // logging carries the streams
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_logging().build())
     }
 }
 

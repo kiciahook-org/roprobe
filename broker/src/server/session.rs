@@ -90,16 +90,42 @@ impl Session {
             op = request.operation.kind(),
             "relaying operation to the client",
         );
-        self.pending.insert(id, request.reply);
-        // own frames, request = op id
-        let message = match request.operation {
-            Operation::GetBytecode { script_path } => ServerMessage::GetBytecode {
-                request: id,
-                script_path,
-            },
-            Operation::InspectClosure { path } => ServerMessage::InspectClosure { request: id, path },
-            op => ServerMessage::Operation { id, op },
+        // own frames, request = op id; fire-and-forget ones ack on send
+        let (message, ack) = match request.operation {
+            Operation::GetBytecode { script_path } => (
+                ServerMessage::GetBytecode {
+                    request: id,
+                    script_path,
+                },
+                false,
+            ),
+            Operation::InspectClosure { path } => {
+                (ServerMessage::InspectClosure { request: id, path }, false)
+            }
+            Operation::HookRemote { remote_path, mode } => {
+                (ServerMessage::HookRemote { remote_path, mode }, true)
+            }
+            Operation::UnhookRemote { remote_path } => {
+                (ServerMessage::UnhookRemote { remote_path }, true)
+            }
+            Operation::Trace {
+                target_path,
+                enabled,
+            } => (
+                ServerMessage::Trace {
+                    target_path,
+                    enabled,
+                },
+                true,
+            ),
+            op => (ServerMessage::Operation { id, op }, false),
         };
+        if ack {
+            self.send(message).await?;
+            let _ = request.reply.send(OpResult::Ok);
+            return Ok(());
+        }
+        self.pending.insert(id, request.reply);
         self.send(message).await
     }
 
